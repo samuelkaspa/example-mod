@@ -6,7 +6,7 @@
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "$MOD_ID",
+	"id": "$originalgeode.example-mod",
 	"name": "$Mobile_touch-view",
 	"version": "$1.0",
 	"developer": "$GDsamuelPS",
