@@ -13,7 +13,7 @@ jobs:
         config:
         - name: Android
           os: ubuntu-latest
-          target: Android
+          platform: Android
 
     name: ${{ matrix.config.name }}
     runs-on: ${{ matrix.config.os }}
@@ -25,4 +25,4 @@ jobs:
       uses: geode-sdk/build-geode-mod@main
       with:
         sdk: v2.0.0-beta.27
-        platform : ${{ matrix.config.target }}
+        platform: ${{ matrix.config.target }}
