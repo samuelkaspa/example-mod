@@ -6,11 +6,11 @@
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "$originalgeode.example-mod",
-	"name": "$Mobile_touch-view",
+	"id": "originalgeode.example-mod",
+	"name": "Mobile_touch-view",
 	"version": "$1.0",
 	"developer": "$GDsamuelPS",
-	"description": "$Mobile touch view input",
+	"description": "Mobile touch view input",
 	"dependencies": {
 		"geode.node-ids": ">=v1.23.3"
 	}
