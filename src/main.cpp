@@ -1,100 +1,103 @@
-/**
- * Include the Geode headers.
- */
 #include <Geode/Geode.hpp>
+#include <Geode/modify/TouchDispatcher.hpp>
+#include <Geode/modify/PlayLayer.hpp>
 
-/**
- * Brings cocos2d and all Geode namespaces to the current scope.
- */
 using namespace geode::prelude;
 
-/**
- * `$modify` lets you extend and modify GD's classes.
- * To hook a function in Geode, simply $modify the class
- * and write a new function definition with the signature of
- * the function you want to hook.
- *
- * Here we use the overloaded `$modify` macro to set our own class name,
- * so that we can use it for button callbacks.
- *
- * Notice the header being included, you *must* include the header for
- * the class you are modifying, or you will get a compile error.
- *
- * Another way you could do this is like this:
- *
- * struct MyMenuLayer : Modify<MyMenuLayer, MenuLayer> {};
- */
-#include <Geode/modify/MenuLayer.hpp>
-class $modify(MyMenuLayer, MenuLayer) {
-	/**
-	 * Typically classes in GD are initialized using the `init` function, (though not always!),
-	 * so here we use it to add our own button to the bottom menu.
-	 *
-	 * Note that for all hooks, your signature has to *match exactly*,
-	 * `void init()` would not place a hook!
-	*/
-	bool init() {
-		/**
-		 * We call the original init function so that the
-		 * original class is properly initialized.
-		 */
-		if (!MenuLayer::init()) {
-			return false;
-		}
+static Touch* g_activeTouch = nullptr;
+static double g_touchStartTime = 0.0;
 
-		/**
-		 * You can use methods from the `geode::log` namespace to log messages to the console,
-		 * being useful for debugging and such. See this page for more info about logging:
-		 * https://docs.geode-sdk.org/tutorials/logging
-		*/
-		log::debug("Hello from my MenuLayer::init hook! This layer has {} children.", this->getChildrenCount());
+class TouchHoldIndicator : public CCNode {
+public:
+    CCDrawNode* m_circleNode = nullptr;
+    CCLabelBMFont* m_timerLabel = nullptr;
 
-		/**
-		 * See this page for more info about buttons
-		 * https://docs.geode-sdk.org/tutorials/buttons
-		*/
-		auto myButton = CCMenuItemSpriteExtra::create(
-			CCSprite::createWithSpriteFrameName("GJ_likeBtn_001.png"),
-			this,
-			/**
-			 * Here we use the name we set earlier for our modify class.
-			*/
-			menu_selector(MyMenuLayer::onMyButton)
-		);
+    CREATE_FUNC(TouchHoldIndicator);
 
-		/**
-		 * Here we access the `bottom-menu` node by its ID, and add our button to it.
-		 * Node IDs are a Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/nodetree
-		*/
-		auto menu = this->getChildByID("bottom-menu");
-		menu->addChild(myButton);
+    bool init() override {
+        if (!CCNode::init()) return false;
 
-		/**
-		 * The `_spr` string literal operator just prefixes the string with
-		 * your mod id followed by a slash. This is good practice for setting your own node ids.
-		*/
-		myButton->setID("my-button"_spr);
+        m_circleNode = CCDrawNode::create();
+        m_circleNode->drawDot(ccp(0, 0), 28.0f, ccc4f(1.0f, 1.0f, 1.0f, 0.4f));
+        this->addChild(m_circleNode);
 
-		/**
-		 * We update the layout of the menu to ensure that our button is properly placed.
-		 * This is yet another Geode feature, see this page for more info about it:
-		 * https://docs.geode-sdk.org/tutorials/layouts
-		*/
-		menu->updateLayout();
+        m_timerLabel = CCLabelBMFont::create("0.0", "bigFont.fnt");
+        m_timerLabel->setScale(0.45f);
+        m_timerLabel->setPosition(ccp(0, 0));
+        this->addChild(m_timerLabel);
 
-		/**
-		 * We return `true` to indicate that the class was properly initialized.
-		 */
-		return true;
-	}
+        this->scheduleUpdate();
+        return true;
+    }
 
-	/**
-	 * This is the callback function for the button we created earlier.
-	 * The signature for button callbacks must always be the same,
-	 * return type `void` and taking a `CCObject*`.
-	*/
-	void onMyButton(CCObject*) {
-		FLAlertLayer::create("Geode", "Hello from my custom mod!", "OK")->show();
-	}
+    void update(float dt) override {
+        if (g_touchStartTime > 0.0) {
+            double elapsed = (m_pScheduler->getTime() - g_touchStartTime);
+            m_timerLabel->setString(fmt::format("{:.1f}", elapsed).c_str());
+        }
+    }
+};
+
+static TouchHoldIndicator* g_currentIndicator = nullptr;
+
+void spawnExplosionEffect(CCPoint pos, CCNode* parent) {
+    if (!parent) return;
+
+    auto explosionNode = CCDrawNode::create();
+    explosionNode->setPosition(pos);
+    explosionNode->drawDot(ccp(0, 0), 35.0f, ccc4f(1.0f, 1.0f, 1.0f, 0.9f));
+    parent->addChild(explosionNode, 999);
+
+    auto scaleTo = CCScaleTo::create(0.5f, 2.2f);
+    auto fadeOut = CCFadeOut::create(0.5f);
+    auto spawnAnim = CCSpawn::create(scaleTo, fadeOut, nullptr);
+    auto removeAction = CCRemoveSelf::create();
+
+    explosionNode->runAction(CCSequence::create(spawnAnim, removeAction, nullptr));
+}
+
+class $modify(MyPlayLayer, PlayLayer) {
+    void onExit() {
+        if (g_currentIndicator) {
+            g_currentIndicator->removeFromParent();
+            g_currentIndicator = nullptr;
+        }
+        g_activeTouch = nullptr;
+        PlayLayer::onExit();
+    }
+};
+
+class $modify(CCTouchDispatcher) {
+    bool touches(CCSet* touches, CCEvent* event, unsigned int index) {
+        auto playLayer = PlayLayer::get();
+        if (playLayer && touches && touches->count() > 0) {
+            auto touch = static_cast<CCTouch*>(touches->anyObject());
+            CCPoint location = touch->getLocation();
+
+            if (index == CCTOUCHBEGAN) {
+                g_activeTouch = touch;
+                g_touchStartTime = CCDirector::sharedDirector()->getScheduler()->getTime();
+
+                if (g_currentIndicator) g_currentIndicator->removeFromParent();
+                g_currentIndicator = TouchHoldIndicator::create();
+                g_currentIndicator->setPosition(location);
+                playLayer->addChild(g_currentIndicator, 1000);
+
+                spawnExplosionEffect(location, playLayer);
+
+            } else if (index == CCTOUCHMOVED && g_activeTouch == touch) {
+                if (g_currentIndicator) g_currentIndicator->setPosition(location);
+
+            } else if ((index == CCTOUCHENDED || index == CCTOUCHCANCELLED) && g_activeTouch == touch) {
+                if (g_currentIndicator) {
+                    g_currentIndicator->removeFromParent();
+                    g_currentIndicator = nullptr;
+                }
+                spawnExplosionEffect(location, playLayer);
+                g_activeTouch = nullptr;
+                g_touchStartTime = 0.0;
+            }
+        }
+        return CCTouchDispatcher::touches(touches, event, index);
+    }
 };
