@@ -6,9 +6,9 @@
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "meu.mod.mobile.touch",
+	"id": "gdsamuelps.mobile-touch",
 	"name": "Mobile Touch View",
-	"version": "v1.0.0",
+	"version": "1.0.0",
 	"developer": "GDSamuelPS",
 	"description": "Exibe o indicador de toque no ecrã",
 	"dependencies": [
