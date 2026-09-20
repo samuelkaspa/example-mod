@@ -1,17 +1,21 @@
 {
-	"geode": "$1.8.0",
+	"geode": "v2.0.0-beta.27",
 	"gd": {
 		"win": "2.2081",
 		"android": "2.2081",
 		"mac": "2.2081",
 		"ios": "2.2081"
 	},
-	"id": "originalgeode.example-mod",
-	"name": "Mobile_touch-view",
-	"version": "$1.0",
-	"developer": "$GDsamuelPS",
-	"description": "Mobile touch view input",
-	"dependencies": {
-		"geode.node-ids": ">=v1.23.3"
-	}
+	"id": "meu.mod.mobile.touch",
+	"name": "Mobile Touch View",
+	"version": "v1.0.0",
+	"developer": "GDSamuelPS",
+	"description": "Exibe o indicador de toque no ecrã",
+	"dependencies": [
+		{
+			"id": "geode.node-ids",
+			"version": ">=v1.23.3",
+			"importance": "required"
+		}
+	]
 }
