@@ -1,259 +1,204 @@
 #include <Geode/Geode.hpp>
-#include <Geode/modify/PlayLayer.hpp>
-#include <Geode/modify/PauseLayer.hpp>
-#include <Geode/ui/GeodeUI.hpp>
-#include <vector>
-#include <string>
-#include <chrono>
+#include <Geode/modify/MenuLayer.hpp>
+
+extern "C" {
+#include <lua.h>
+#include <lualib.h>
+#include <lauxlib.h>
+}
 
 using namespace geode::prelude;
 
-// ==========================================
-// ESTRUTURAS E CONFIGURAÇÕES GLOBAIS
-// ==========================================
-struct ClickPoint {
-    cocos2d::CCPoint position;
-    float holdTime;
-    cocos2d::ccColor3B color;
-    bool isHold;
-};
+// ---------------------------------------------------------------
+// Lua
+// ---------------------------------------------------------------
+static lua_State* g_L = nullptr;
 
-struct SavedRun {
-    std::string name;
-    std::vector<ClickPoint> points;
-};
+static int l_print(lua_State* L) {
+    int n = lua_gettop(L);
+    std::string out;
+    for (int i = 1; i <= n; i++) {
+        size_t len;
+        const char* s = luaL_tolstring(L, i, &len);
+        out.append(s, len);
+        if (i < n) out += " ";
+        lua_pop(L, 1);
+    }
+    log::info("[Lua] {}", out);
+    Notification::create(out, NotificationIcon::None, 2.f)->show();
+    return 0;
+}
 
-class ModSettings {
+// speed(2.0) -> muda a velocidade do jogo
+static int l_speed(lua_State* L) {
+    float s = (float)luaL_checknumber(L, 1);
+    CCDirector::get()->getScheduler()->setTimeScale(s);
+    return 0;
+}
+
+// x, y = player_pos()
+static int l_player_pos(lua_State* L) {
+    auto pl = PlayLayer::get();
+    if (!pl) { lua_pushnil(L); return 1; }
+    auto p = pl->m_player1->getPosition();
+    lua_pushnumber(L, p.x);
+    lua_pushnumber(L, p.y);
+    return 2;
+}
+
+// set_player_pos(x, y)
+static int l_set_player_pos(lua_State* L) {
+    auto pl = PlayLayer::get();
+    if (!pl) return 0;
+    pl->m_player1->setPosition({
+        (float)luaL_checknumber(L, 1),
+        (float)luaL_checknumber(L, 2)
+    });
+    return 0;
+}
+
+static void initLua() {
+    if (g_L) return;
+    g_L = luaL_newstate();
+    luaL_openlibs(g_L);
+    lua_register(g_L, "print", l_print);
+    lua_register(g_L, "speed", l_speed);
+    lua_register(g_L, "player_pos", l_player_pos);
+    lua_register(g_L, "set_player_pos", l_set_player_pos);
+}
+
+// retorna "" se deu certo, ou a mensagem de erro
+static std::string runLua(std::string const& code) {
+    initLua();
+    if (luaL_dostring(g_L, code.c_str()) != LUA_OK) {
+        std::string err = lua_tostring(g_L, -1) ? lua_tostring(g_L, -1) : "erro desconhecido";
+        lua_pop(g_L, 1);
+        return err;
+    }
+    return "";
+}
+
+// ---------------------------------------------------------------
+// Popup com caixa de texto + botao Confirmar
+// ---------------------------------------------------------------
+class CodePopup : public Popup<> {
+protected:
+    TextInput* m_input = nullptr;
+
+    bool setup() override {
+        this->setTitle("Lua Console");
+
+        m_input = TextInput::create(260.f, "Cole seu codigo Lua aqui", "chatFont.fnt");
+        m_input->setMaxCharCount(20000);
+        m_mainLayer->addChildAtPosition(m_input, Anchor::Center, {0.f, 10.f});
+
+        auto spr = ButtonSprite::create("Confirmar");
+        auto btn = CCMenuItemExt::createSpriteExtra(spr, [this](CCObject*) {
+            auto err = runLua(m_input->getString());
+            if (err.empty()) {
+                Notification::create("Codigo executado!", NotificationIcon::Success)->show();
+                this->onClose(nullptr);
+            } else {
+                FLAlertLayer::create("Erro no codigo", err, "OK")->show();
+            }
+        });
+        m_buttonMenu->addChildAtPosition(btn, Anchor::Bottom, {0.f, 25.f});
+        return true;
+    }
+
 public:
-    static inline bool touchMobileEnabled = true;
-    static inline bool clickTrackerEnabled = true;
-    static inline bool trackerHackEnabled = true;
-    static inline bool safeModeEnabled = false;
-    static inline bool lockedPoints = false;
-
-    // Configurações Visuais
-    static inline float textOpacity = 1.0f;
-    static inline float checkpointOpacity = 0.8f;
-    static inline cocos2d::ccColor3B dotColor = {0, 255, 0};
-    static inline cocos2d::ccColor3B explosionColor = {255, 255, 255};
-    static inline float dotOpacity = 1.0f;
-    static inline float precisionThreshold = 1.0f; // Precisão de proximidade (padrão 1)
-
-    static inline std::vector<ClickPoint> mode2Points;
-    static inline std::vector<ClickPoint> mode3Points;
-    static inline std::vector<SavedRun> savedRuns;
-};
-
-// ==========================================
-// 1. TOUCH MOBILE INDICATOR (Efeito Visual)
-// ==========================================
-class TouchMobileNode : public cocos2d::CCNode {
-public:
-    cocos2d::CCDrawNode* drawNode = nullptr;
-    cocos2d::CCLabelBMFont* timerLabel = nullptr;
-    cocos2d::CCMotionStreak* streak = nullptr;
-    std::chrono::time_point<std::chrono::high_resolution_clock> startTime;
-    bool isPressed = false;
-
-    static TouchMobileNode* create() {
-        auto ret = new TouchMobileNode();
-        if (ret && ret->init()) {
+    static CodePopup* create() {
+        auto ret = new CodePopup();
+        if (ret->initAnchored(300.f, 160.f)) {
             ret->autorelease();
             return ret;
         }
-        CC_SAFE_DELETE(ret);
+        delete ret;
         return nullptr;
     }
+};
+
+// ---------------------------------------------------------------
+// Bolinha arrastavel (fica em todas as telas)
+// ---------------------------------------------------------------
+class FloatingBall : public CCLayer {
+protected:
+    CCSprite* m_ball = nullptr;
+    CCPoint m_start, m_offset;
+    bool m_moved = false;
 
     bool init() override {
-        drawNode = cocos2d::CCDrawNode::create();
-        this->addChild(drawNode);
+        if (!CCLayer::init()) return false;
 
-        // Cronômetro no centro (não gira)
-        timerLabel = cocos2d::CCLabelBMFont::create("0.000s", "chatFont.fnt");
-        timerLabel->setScale(0.5f);
-        timerLabel->setOpacity(static_cast<GLubyte>(ModSettings::textOpacity * 255));
-        this->addChild(timerLabel, 10);
+        auto win = CCDirector::get()->getWinSize();
 
-        // Rastro (Trail) quando arrastado
-        streak = cocos2d::CCMotionStreak::create(0.3f, 1.0f, 10.0f, cocos2d::ccc3(255, 255, 255), "square.png");
-        this->addChild(streak);
+        m_ball = CCSprite::createWithSpriteFrameName("GJ_button_01.png");
+        m_ball->setScale(0.8f);
+        m_ball->setOpacity(200);
+        m_ball->setPosition({35.f, win.height / 2});
+        this->addChild(m_ball);
 
-        this->scheduleUpdate();
+        auto lbl = CCLabelBMFont::create("</>", "bigFont.fnt");
+        lbl->setScale(0.45f);
+        lbl->setPosition(m_ball->getContentSize() / 2);
+        m_ball->addChild(lbl);
+
+        this->setTouchEnabled(true);
         return true;
     }
 
-    void startTouch(cocos2d::CCPoint pos) {
-        this->setPosition(pos);
-        isPressed = true;
-        startTime = std::chrono::high_resolution_clock::now();
-        this->setVisible(true);
-        this->setOpacity(255);
+    void registerWithTouchDispatcher() override {
+        CCTouchDispatcher::get()->addTargetedDelegate(this, -600, true);
     }
 
-    void updateTouch(cocos2d::CCPoint pos) {
-        this->setPosition(pos);
-        if (streak) streak->setPosition(pos);
+    bool ccTouchBegan(CCTouch* t, CCEvent*) override {
+        auto p = this->convertToNodeSpace(t->getLocation());
+        float r = m_ball->getContentSize().width * m_ball->getScale() / 2;
+        if (ccpDistance(p, m_ball->getPosition()) > r) return false;
+        m_start = p;
+        m_offset = m_ball->getPosition() - p;
+        m_moved = false;
+        return true; // so engole o toque se acertou a bolinha
     }
 
-    void releaseTouch() {
-        isPressed = false;
-        // Efeito de explosão e sumiço em 0.5s
-        drawNode->runAction(cocos2d::CCScaleTo::create(0.5f, 2.0f));
-        this->runAction(cocos2d::CCSequence::create(
-            cocos2d::CCFadeOut::create(0.5f),
-            cocos2d::CCCallFunc::create(this, callfunc_selector(TouchMobileNode::resetNode)),
-            nullptr
-        ));
-    }
-
-    void resetNode() {
-        this->setVisible(false);
-        drawNode->setScale(1.0f);
-    }
-
-    void update(float dt) override {
-        if (isPressed) {
-            auto now = std::chrono::high_resolution_clock::now();
-            std::chrono::duration<float> elapsed = now - startTime;
-            
-            // Atualiza tempo pressionado sem girar o texto
-            char buffer[16];
-            snprintf(buffer, sizeof(buffer), "%.3fs", elapsed.count());
-            timerLabel->setString(buffer);
-
-            // Animação da bolinha detalhada girando
-            drawNode->clear();
-            drawNode->setRotation(drawNode->getRotation() + 180.0f * dt);
-            drawNode->drawCircle(cocos2d::CCPoint(0, 0), 15.0f, ModSettings::dotColor, 1.5f, 16);
+    void ccTouchMoved(CCTouch* t, CCEvent*) override {
+        auto p = this->convertToNodeSpace(t->getLocation());
+        if (!m_moved && ccpDistance(p, m_start) > 8.f) m_moved = true;
+        if (m_moved) {
+            auto win = CCDirector::get()->getWinSize();
+            auto np = p + m_offset;
+            np.x = std::clamp(np.x, 15.f, win.width - 15.f);
+            np.y = std::clamp(np.y, 15.f, win.height - 15.f);
+            m_ball->setPosition(np);
         }
     }
-};
 
-// ==========================================
-// POPUP DE CONFIGURAÇÕES (In-Game Menu)
-// ==========================================
-class ModSettingsPopup : public geode::Popup<> {
-protected:
-    bool setup() override {
-        this->setTitle("Configurações do Mod");
-
-        auto winSize = cocos2d::CCDirector::sharedDirector()->getWinSize();
-
-        // Botão Safe Mode
-        auto safeToggle = CCMenuItemToggler::createWithStandardSprites(
-            this, menu_selector(ModSettingsPopup::onToggleSafeMode), 0.7f
-        );
-        safeToggle->toggle(ModSettings::safeModeEnabled);
-        
-        auto menu = CCMenu::create();
-        menu->addChild(safeToggle);
-        menu->setPosition({winSize.width / 2, winSize.height / 2});
-        this->m_mainLayer->addChild(menu);
-
-        return true;
+    void ccTouchEnded(CCTouch*, CCEvent*) override {
+        if (m_moved) return;
+        auto scene = CCDirector::get()->getRunningScene();
+        if (scene && scene->getChildByType<CodePopup>(0)) return; // ja aberto
+        if (auto popup = CodePopup::create()) popup->show();
     }
 
-    void onToggleSafeMode(CCObject*) {
-        ModSettings::safeModeEnabled = !ModSettings::safeModeEnabled;
-    }
+    void ccTouchCancelled(CCTouch*, CCEvent*) override {}
 
 public:
-    static ModSettingsPopup* create() {
-        auto ret = new ModSettingsPopup();
-        if (ret && ret->initAnchored(320.0f, 240.0f)) {
-            ret->autorelease();
-            return ret;
-        }
-        CC_SAFE_DELETE(ret);
-        return nullptr;
-    }
+    CREATE_FUNC(FloatingBall);
 };
 
-// ==========================================
-// 2 & 3. HOOKS NO PLAYLAYER (Gameplay)
-// ==========================================
-class $modify(MyPlayLayer, PlayLayer) {
-    TouchMobileNode* touchNode = nullptr;
-
-    bool init(GJGameLevel* level, bool useReplay, bool dontCreateObjects) {
-        if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
-
-        // Criar nó de toque mobile
-        m_fields->touchNode = TouchMobileNode::create();
-        m_fields->touchNode->setVisible(false);
-        this->addChild(m_fields->touchNode, 999);
-
+// ---------------------------------------------------------------
+// Cria a bolinha uma vez, quando o menu principal abre
+// ---------------------------------------------------------------
+class $modify(MenuLayer) {
+    bool init() {
+        if (!MenuLayer::init()) return false;
+        static bool added = false;
+        if (!added) {
+            added = true;
+            auto ball = FloatingBall::create();
+            ball->setZOrder(10000);
+            SceneManager::get()->keepAcrossScenes(ball);
+        }
         return true;
-    }
-
-    void pushButton(int player, bool isPush) {
-        PlayLayer::pushButton(player, isPush);
-
-        // Se estiver no Practice Mode, desativa o Tracker Hack
-        if (this->m_isPracticeMode) return;
-
-        cocos2d::CCPoint playerPos = this->m_player1->getPosition();
-
-        // Modo 2: Click Tracker
-        if (ModSettings::clickTrackerEnabled) {
-            ModSettings::mode2Points.push_back({playerPos, 0.0f, {0, 255, 0}, false});
-        }
-
-        // Modo 3: Tracker Hack
-        if (ModSettings::trackerHackEnabled && !ModSettings::lockedPoints) {
-            ModSettings::mode3Points.push_back({playerPos, 0.0f, ModSettings::dotColor, false});
-        }
-    }
-
-    void resetLevel() override {
-        PlayLayer::resetLevel();
-
-        // Modo 2: Apaga as bolinhas ao morrer
-        if (ModSettings::clickTrackerEnabled) {
-            ModSettings::mode2Points.clear();
-        }
-
-        // Modo 3: Não apaga as bolinhas no respawn!
-    }
-
-    void levelComplete() override {
-        if (ModSettings::safeModeEnabled) {
-            // Safe Mode ativo: Não conclui o nível oficialmente
-            ModSettings::lockedPoints = true;
-            FLAlertLayer::create("Safe Mode =D", "Nível concluído em modo seguro. O progresso não foi salvo.", "OK")->show();
-            return;
-        }
-
-        ModSettings::lockedPoints = true; // Trava após concluir o nível
-        PlayLayer::levelComplete();
-    }
-};
-
-// ==========================================
-// HOOK NO PAUSELAYER (Botão de Pausa)
-// ==========================================
-class $modify(MyPauseLayer, PauseLayer) {
-    void customSetup() {
-        PauseLayer::customSetup();
-
-        auto winSize = cocos2d::CCDirector::sharedDirector()->getWinSize();
-
-        // Criar botão no lado direito (meio-termo, sem encostar na borda)
-        auto btnSprite = CCSprite::createWithSpriteFrameName("GJ_optionsBtn_001.png");
-        btnSprite->setScale(0.6f);
-
-        auto btn = CCMenuItemSpriteExtra::create(
-            btnSprite, this, menu_selector(MyPauseLayer::onOpenModSettings)
-        );
-
-        auto menu = CCMenu::create();
-        menu->setPosition({winSize.width - 60.0f, winSize.height / 2.0f});
-        menu->addChild(btn);
-        this->addChild(menu, 10);
-    }
-
-    void onOpenModSettings(CCObject*) {
-        ModSettingsPopup::create()->show();
     }
 };
