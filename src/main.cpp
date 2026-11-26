@@ -1,5 +1,11 @@
 #include <Geode/Geode.hpp>
+#include <Geode/ui/Popup.hpp>
+#include <Geode/ui/SceneManager.hpp>
+#include <Geode/ui/TextInput.hpp>
+#include <Geode/ui/Notification.hpp>
 #include <Geode/modify/MenuLayer.hpp>
+
+#include <algorithm>
 
 extern "C" {
 #include <lua.h>
@@ -71,7 +77,8 @@ static void initLua() {
 static std::string runLua(std::string const& code) {
     initLua();
     if (luaL_dostring(g_L, code.c_str()) != LUA_OK) {
-        std::string err = lua_tostring(g_L, -1) ? lua_tostring(g_L, -1) : "erro desconhecido";
+        const char* msg = lua_tostring(g_L, -1);
+        std::string err = msg ? msg : "erro desconhecido";
         lua_pop(g_L, 1);
         return err;
     }
@@ -79,13 +86,15 @@ static std::string runLua(std::string const& code) {
 }
 
 // ---------------------------------------------------------------
-// Popup com caixa de texto + botao Confirmar
+// Popup com caixa de texto + botao Confirmar (estilo Geode v5/v6)
 // ---------------------------------------------------------------
-class CodePopup : public Popup<> {
+class CodePopup : public Popup {
 protected:
     TextInput* m_input = nullptr;
 
-    bool setup() override {
+    bool setupUI() {
+        if (!Popup::init(300.f, 160.f)) return false;
+
         this->setTitle("Lua Console");
 
         m_input = TextInput::create(260.f, "Cole seu codigo Lua aqui", "chatFont.fnt");
@@ -109,7 +118,7 @@ protected:
 public:
     static CodePopup* create() {
         auto ret = new CodePopup();
-        if (ret->initAnchored(300.f, 160.f)) {
+        if (ret->setupUI()) {
             ret->autorelease();
             return ret;
         }
